@@ -4,6 +4,8 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+
+// rnd color
 fn get_random_color(text: &str) -> String {
     let color_index = rand::random_range(0..8);
 

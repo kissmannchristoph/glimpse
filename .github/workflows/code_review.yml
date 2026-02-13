@@ -1,0 +1,100 @@
+name: Gemini Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  code-review:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Get changed files
+        id: changed-files
+        run: |
+          # Get the list of changed files
+          git diff --name-only origin/${{ github.base_ref }}...HEAD > changed_files.txt
+          echo "Files changed:"
+          cat changed_files.txt
+
+      - name: Get file contents and diff
+        id: get-diff
+        run: |
+          # Create a file with all diffs
+          echo "## Code Changes for Review" > review_context.txt
+          echo "" >> review_context.txt
+          
+          while IFS= read -r file; do
+            if [ -f "$file" ]; then
+              echo "### File: $file" >> review_context.txt
+              echo '```diff' >> review_context.txt
+              git diff origin/${{ github.base_ref }}...HEAD -- "$file" >> review_context.txt
+              echo '```' >> review_context.txt
+              echo "" >> review_context.txt
+            fi
+          done < changed_files.txt
+
+      - name: Review code with Gemini
+        id: gemini-review
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          # Read the diff content
+          DIFF_CONTENT=$(cat review_context.txt)
+          
+          # Create JSON payload for Gemini API
+          cat > request.json <<EOF
+          {
+            "contents": [{
+              "parts": [{
+                "text": "You are an expert code reviewer. Review the following code changes and provide constructive feedback. Focus on:\n\n1. Code quality and best practices\n2. Potential bugs or issues\n3. Performance concerns\n4. Security vulnerabilities\n5. Code style and readability\n6. Suggestions for improvement\n\nProvide your review in a clear, constructive manner. Use markdown formatting.\n\n${DIFF_CONTENT}"
+              }]
+            }],
+            "generationConfig": {
+              "temperature": 0.4,
+              "topK": 32,
+              "topP": 1,
+              "maxOutputTokens": 4096
+            }
+          }
+          EOF
+          
+          # Call Gemini API
+          RESPONSE=$(curl -s -X POST \
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}" \
+            -H 'Content-Type: application/json' \
+            -d @request.json)
+          
+          # Extract the review text from JSON response
+          REVIEW=$(echo "$RESPONSE" | jq -r '.candidates[0].content.parts[0].text // "Error: Could not generate review"')
+          
+          # Save review to file
+          echo "$REVIEW" > review.txt
+          
+          # Also save to GitHub output (escaped for multiline)
+          echo "review<<EOF" >> $GITHUB_OUTPUT
+          echo "$REVIEW" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Post review comment
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const review = fs.readFileSync('review.txt', 'utf8');
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## 🤖 Gemini AI Code Review\n\n${review}\n\n---\n*Powered by Google Gemini 1.5 Flash*`
+            });
