@@ -1,7 +1,27 @@
+use colored::*;
 use std::env;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+
+fn get_random_color(text: &str) -> String {
+    let color_index = rand::random_range(0..8);
+
+    // let color_index = rng.r(0..8);
+
+    let colored_text = match color_index {
+        0 => text.red(),
+        1 => text.green(),
+        2 => text.yellow(),
+        3 => text.blue(),
+        4 => text.magenta(),
+        5 => text.cyan(),
+        6 => text.white(),
+        _ => text.bright_purple(),
+    };
+
+    format!("{}", colored_text)
+}
 
 fn main() {
     // 1. Get the target directory (argument or current dir)
@@ -55,7 +75,7 @@ fn main() {
 
                     // Print result
                     let folder_name = path.file_name().unwrap().to_string_lossy();
-                    println!("{:<30} | {}", folder_name, branch_name);
+                    println!("{:<30} | {}", folder_name, get_random_color(branch_name.as_str()));
                 }
             }
         }
