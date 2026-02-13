@@ -25,25 +25,67 @@ jobs:
           echo "Files changed:"
           cat changed_files.txt
 
+      - name: Filter reviewable files
+        id: filter-files
+        run: |
+          # Filter to only include code files that Gemini can review
+          # Supported extensions
+          SUPPORTED_EXTS="rs|py|js|ts|jsx|tsx|go|java|cpp|c|h|hpp|cs|rb|php|swift|kt|scala|sh|bash|yaml|yml|json|toml|sql|md|txt"
+          
+          # Filter files
+          grep -E "\.(${SUPPORTED_EXTS})$" changed_files.txt > reviewable_files.txt || true
+          
+          # Check if we have any files to review
+          if [ ! -s reviewable_files.txt ]; then
+            echo "has_reviewable_files=false" >> $GITHUB_OUTPUT
+            echo "No reviewable code files found in this PR"
+          else
+            echo "has_reviewable_files=true" >> $GITHUB_OUTPUT
+            echo "Reviewable files:"
+            cat reviewable_files.txt
+          fi
+
       - name: Get file contents and diff
         id: get-diff
+        if: steps.filter-files.outputs.has_reviewable_files == 'true'
         run: |
           # Create a file with all diffs
           echo "## Code Changes for Review" > review_context.txt
           echo "" >> review_context.txt
           
-          while IFS= read -r file; do
+          # Limit diff size to avoid token limits
+          MAX_FILES=15
+          COUNT=0
+          
+          while IFS= read -r file && [ $COUNT -lt $MAX_FILES ]; do
             if [ -f "$file" ]; then
-              echo "### File: $file" >> review_context.txt
-              echo '```diff' >> review_context.txt
-              git diff origin/${{ github.base_ref }}...HEAD -- "$file" >> review_context.txt
-              echo '```' >> review_context.txt
-              echo "" >> review_context.txt
+              # Get file size
+              SIZE=$(wc -c < "$file" 2>/dev/null || echo 0)
+              
+              # Skip very large files (> 100KB)
+              if [ "$SIZE" -lt 102400 ]; then
+                echo "### File: $file" >> review_context.txt
+                echo '```diff' >> review_context.txt
+                git diff origin/${{ github.base_ref }}...HEAD -- "$file" >> review_context.txt
+                echo '```' >> review_context.txt
+                echo "" >> review_context.txt
+                COUNT=$((COUNT + 1))
+              else
+                echo "### File: $file (skipped - too large)" >> review_context.txt
+                echo "" >> review_context.txt
+              fi
             fi
-          done < changed_files.txt
+          done < reviewable_files.txt
+          
+          if [ $COUNT -eq 0 ]; then
+            echo "has_diff=false" >> $GITHUB_OUTPUT
+          else
+            echo "has_diff=true" >> $GITHUB_OUTPUT
+          fi
 
       - name: Review code with Gemini
         id: gemini-review
+        if: steps.get-diff.outputs.has_diff == 'true'
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
@@ -90,11 +132,25 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const fs = require('fs');
-            const review = fs.readFileSync('review.txt', 'utf8');
+            
+            let body;
+            if ('${{ steps.filter-files.outputs.has_reviewable_files }}' === 'false') {
+              body = `## 🤖 Gemini AI Code Review\n\n` +
+                     `ℹ️ No reviewable code files found in this PR.\n\n` +
+                     `Gemini can review: Rust, Python, JavaScript/TypeScript, Go, Java, C/C++, C#, Ruby, PHP, Swift, Kotlin, Scala, Shell scripts, YAML, JSON, TOML, SQL, and Markdown files.\n\n` +
+                     `If you believe this is an error, please check the workflow configuration.`;
+            } else if ('${{ steps.get-diff.outputs.has_diff }}' === 'false') {
+              body = `## 🤖 Gemini AI Code Review\n\n` +
+                     `ℹ️ All changed files were too large to review or were filtered out.\n\n` +
+                     `Files larger than 100KB are skipped to avoid API limits.`;
+            } else {
+              const review = fs.readFileSync('review.txt', 'utf8');
+              body = `## 🤖 Gemini AI Code Review\n\n${review}\n\n---\n*Powered by Google Gemini 1.5 Flash*`;
+            }
             
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `## 🤖 Gemini AI Code Review\n\n${review}\n\n---\n*Powered by Google Gemini 1.5 Flash*`
+              body: body
             });
