@@ -1,156 +1,29 @@
-name: Release
+name: Publish
 
 on:
   push:
     tags:
-      - 'v*'
-
-env:
-  CARGO_TERM_COLOR: always
+      - '*'
 
 jobs:
-  create-release:
-    name: Create Release
-    runs-on: ubuntu-latest
-    outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
-      version: ${{ steps.get_version.outputs.version }}
-    steps:
-      - name: Get version from tag
-        id: get_version
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-
-      - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
-          draft: false
-          prerelease: false
-
-  build:
-    name: Build
-    needs: create-release
+  publish:
+    name: Publish for ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         include:
           - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            artifact_name: glimpse
-            asset_name: glimpse-linux-x86_64
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-            artifact_name: glimpse
-            asset_name: glimpse-linux-x86_64-musl
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact_name: glimpse.exe
-            asset_name: glimpse-windows-x86_64.exe
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            artifact_name: glimpse
-            asset_name: glimpse-macos-x86_64
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            artifact_name: glimpse
-            asset_name: glimpse-macos-aarch64
-
-    runs-on: ${{ matrix.os }}
+            artifact_name: mything
+            asset_name: mything-linux-amd64
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Setup Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          target: ${{ matrix.target }}
-          override: true
-
-      - name: Install musl tools (Linux musl only)
-        if: matrix.target == 'x86_64-unknown-linux-musl'
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
-
-      - name: Build
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --release --target ${{ matrix.target }}
-
-      - name: Strip binary (Linux and macOS)
-        if: matrix.os != 'windows-latest'
-        run: strip target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
-
-      - name: Upload Release Asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ./target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
-          asset_name: ${{ matrix.asset_name }}
-          asset_content_type: application/octet-stream
-
-  update-homebrew:
-    name: Update Homebrew Formula
-    needs: [create-release, build]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Get version
-        id: get_version
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-
-      - name: Download macOS binary for checksum
-        run: |
-          curl -L -o glimpse-macos-x86_64 \
-            https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/glimpse-macos-x86_64
-          
-      - name: Calculate SHA256
-        id: sha256
-        run: |
-          echo "sha256=$(shasum -a 256 glimpse-macos-x86_64 | awk '{print $1}')" >> $GITHUB_OUTPUT
-
-      - name: Update Homebrew tap
-        env:
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        run: |
-          git clone https://$HOMEBREW_TAP_TOKEN@github.com/${{ github.repository_owner }}/homebrew-tap.git
-          cd homebrew-tap
-          
-          cat > Formula/glimpse.rb << EOF
-          class Glimpse < Formula
-            desc "View Git branches across multiple repositories in subfolders"
-            homepage "https://github.com/${{ github.repository }}"
-            version "${{ steps.get_version.outputs.version }}"
-            
-            if Hardware::CPU.intel?
-              url "https://github.com/${{ github.repository }}/releases/download/v${{ steps.get_version.outputs.version }}/glimpse-macos-x86_64"
-              sha256 "${{ steps.sha256.outputs.sha256 }}"
-            else
-              url "https://github.com/${{ github.repository }}/releases/download/v${{ steps.get_version.outputs.version }}/glimpse-macos-aarch64"
-              sha256 "UPDATE_THIS_MANUALLY"
-            end
-          
-            def install
-              bin.install "glimpse-macos-x86_64" => "glimpse" if Hardware::CPU.intel?
-              bin.install "glimpse-macos-aarch64" => "glimpse" if Hardware::CPU.arm?
-            end
-          
-            test do
-              system "#{bin}/glimpse", "--version"
-            end
-          end
-          EOF
-          
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
-          git add Formula/glimpse.rb
-          git commit -m "Update glimpse to v${{ steps.get_version.outputs.version }}"
-          git push
+    - uses: actions/checkout@v4
+    - name: Build
+      run: cargo build --release --locked && sh ./scripts/compile-all.sh
+    - name: Upload binaries to release
+      uses: svenstaro/upload-release-action@v2
+      with:
+        repo_token: ${{ secrets.GITHUB_TOKEN }}
+        file: dist/${{ matrix.artifact_name }}
+        asset_name: ${{ matrix.asset_name }}
+        tag: ${{ github.ref }}
